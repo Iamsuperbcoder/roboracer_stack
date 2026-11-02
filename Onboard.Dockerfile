@@ -63,7 +63,7 @@ COPY ros_ws/. /home/ros_ws
 # `asio` and `udp_msgs`, neither of which was installed, so it failed and took
 # serial_driver -> vesc_driver down with it, then vesc_msgs / rf2o / planner_node
 # aborted alongside. rosdep maps those to libasio-dev and ros-$ROS_DISTRO-udp-msgs
-# (plus joy, sick_scan_xd, python3-serial, python3-smbus, example-interfaces)
+# (plus sick_scan_xd, python3-serial, python3-smbus, example-interfaces)
 # straight from the manifests, so adding a package to ros_ws no longer means
 # remembering to edit this file too.
 #
@@ -90,4 +90,4 @@ RUN chmod +x /home/onboard_setup.sh
 
 ENTRYPOINT ["/home/onboard_setup.sh"]
 
-CMD ["ros2","launch","neo_telemetry","neo_telemetry_sim_launch.py"]
+CMD ["ros2","launch","bringup","sim_launch.py"]

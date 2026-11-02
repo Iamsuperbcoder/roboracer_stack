@@ -2,7 +2,7 @@
 #
 # The racing profile (mapper_params_irl.yaml) has to keep up with a car doing
 # ~3.2 m/s. This one assumes the car is crawling at ~1.1 m/s under
-# neo_telemetry_mapping_launch.py, and spends the CPU that buys on a wider
+# mapping_launch.py, and spends the CPU that buys on a wider
 # scan-match search and a denser pose graph. Do not use it while racing - the
 # larger correlation window costs roughly twice the matching time per scan.
 #

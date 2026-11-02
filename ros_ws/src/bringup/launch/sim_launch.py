@@ -15,7 +15,7 @@
 # (autodrive_roboracer) in the DEVKIT container, so it is not launched here:
 #
 #   devkit container   ros2 launch autodrive_roboracer bringup_headless.launch.py
-#   onboard container  ros2 launch neo_telemetry neo_telemetry_sim_launch.py
+#   onboard container  ros2 launch bringup sim_launch.py
 #   host               ./autodrive_simulator.sh   (the Unity binary)
 #
 # The simulator talks to the bridge over the websocket on :4567; the bridge and
@@ -198,7 +198,7 @@ def generate_launch_description():
         condition=mapping,
         arguments=[
             "-configuration_directory",
-            os.path.join(get_package_share_directory("neo_telemetry"), "config"),
+            os.path.join(get_package_share_directory("bringup"), "config"),
             "-configuration_basename", "cartographer_sim.lua",
         ],
         remappings=[("scan", SIM_SCAN_TOPIC)],

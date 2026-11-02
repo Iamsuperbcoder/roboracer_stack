@@ -4,7 +4,7 @@
 //
 //     ros2 run planner_node estop
 //
-// It cannot live inside neo_telemetry_irl_launch.py: nodes spawned by
+// It cannot live inside irl_launch.py: nodes spawned by
 // ros2 launch do not get a usable stdin, so keypresses would never arrive.
 //
 // The car is STOPPED BY DEFAULT. It only moves once this console is running and

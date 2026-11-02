@@ -15,7 +15,7 @@ cd /home/ros_ws
 
 # Launch AutoDRIVE Devkit Headless
 # ros2 launch autodrive_roboracer bringup_headless.launch.py
-# ros2 launch neo_telemetry neo_telemetry_launch.py
+# ros2 launch bringup sim_launch.py
 
 
 exec "$@"
