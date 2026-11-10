@@ -8,11 +8,11 @@ toward a map that closes cleanly:
   - slam_toolbox gets a wider scan-match window and a denser pose graph
     (config/mapper_params_mapping.yaml)
 
-Use neo_telemetry_irl_launch.py to actually drive the track.
+Use irl_launch.py to actually drive the track.
 
     HOW TO RUN
 
-    terminal 1:  ros2 launch neo_telemetry neo_telemetry_mapping_launch.py \
+    terminal 1:  ros2 launch bringup mapping_launch.py \
                      lidar_x:=0.25 odom_source:=rf2o
     terminal 2:  ros2 run planner_node estop        # press r to release, SPACE to stop
 
@@ -54,7 +54,7 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
 # Drivetrain / steering calibration. Identical to the racing launch - see the
-# long comment block in neo_telemetry_irl_launch.py for where each value comes
+# long comment block in irl_launch.py for where each value comes
 # from. Odometry calibration has nothing to do with how fast we choose to drive,
 # so these must NOT be re-tuned here; if one is wrong it is wrong in both files.
 SPEED_TO_ERPM_GAIN = 4614.0
@@ -331,7 +331,7 @@ def generate_launch_description():
     name="slam_toolbox",
     output="screen",
     parameters=[
-      os.path.join(get_package_share_directory("neo_telemetry"),
+      os.path.join(get_package_share_directory("bringup"),
                    "config", "mapper_params_mapping.yaml"),
       {"use_sim_time": False},
     ],

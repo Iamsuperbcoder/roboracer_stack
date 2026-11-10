@@ -75,7 +75,7 @@ def generate_launch_description():
   # needs it to place /scan), and foxglove_bridge.
   #
   # TO MAP AGAIN, use the launch file that is for it, rather than reviving these:
-  #     ros2 launch neo_telemetry neo_telemetry_mapping_launch.py
+  #     ros2 launch bringup mapping_launch.py
   #
   # Note the SPEED_TO_ERPM_GAIN / STEERING_* / WHEELBASE constants at the top are
   # now unused here - they only ever fed vesc_to_odom. Left in place so
@@ -370,7 +370,7 @@ def generate_launch_description():
 
   # --- DISABLED FOR THE RACE (SLAM config) ---
 #   slam_params_file = os.path.join(
-#     get_package_share_directory('neo_telemetry'),
+#     get_package_share_directory('bringup'),
 #     'config',
 #     'mapper_params_irl.yaml',
 #   )
