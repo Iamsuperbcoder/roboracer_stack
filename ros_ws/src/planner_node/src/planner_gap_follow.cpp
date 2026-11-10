@@ -8,6 +8,7 @@
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/float32.hpp"
+#include "std_msgs/msg/int32.hpp"
 #include "std_msgs/msg/float64.hpp"
 
 // ---------------------------------------------------------------------------
@@ -50,7 +51,9 @@ float corridor_half_width = 0.18f;
 // follow-the-gap step for what each one does and how the defaults were picked.
 float min_gap_depth = 0.8f;
 float min_gap_width = 0.40f;
+float nearest_obstacle = 10.0f; // closest wall this frame, for corner learning
 float deep_band = 0.20f;
+float bubble_radius_m = 0.22f; // safety bubble around walls, overridden in sim
 
 // What the planner wants the drivetrain to do this frame. This is the ONLY
 // throttle decision either stack sees: the node turns it into a single
@@ -314,6 +317,16 @@ std_msgs::msg::Float32 findDisparities(float threshold, const std::vector<float>
     else
       clean_ranges[i] = v;
   }
+  // Closest wall around the front of the car this frame. The adaptive corner
+  // speed uses it to judge how tight the last corner really was.
+  nearest_obstacle = max_scan_range;
+  for (size_t i = 0; i < n; i++)
+  {
+    const float a = angleMin + static_cast<float>(i) * angleIncrement;
+    if (std::abs(a) <= 1.75f && clean_ranges[i] > 0.05f)
+      nearest_obstacle = std::min(nearest_obstacle, clean_ranges[i]);
+  }
+
   proc_ranges = clean_ranges; // working copy we extend bubbles into
 
   // 2. Disparity extender. Jumps are detected against the untouched
@@ -323,7 +336,7 @@ std_msgs::msg::Float32 findDisparities(float threshold, const std::vector<float>
   // ~car half-width (0.15 m) plus margin. The extra margin over a bare
   // half-width pushes the center of the chosen gap further off the inner wall,
   // which is what stops the car from clipping the apex on a tight turn.
-  const float bubble_radius = 0.22f;
+  const float bubble_radius = bubble_radius_m;
   // A close obstacle subtends a huge half-angle (atan2 -> ~50 deg at 0.3 m),
   // which would smear the bubble across open space. Cap how wide a single
   // disparity may block.
@@ -737,13 +750,14 @@ public:
     // Simulator scaling. The normalized command is stack-agnostic, so these
     // convert it into what AutoDRIVE's open-loop throttle expects. Only read in
     // output_mode:=sim.
-    sim_cruise_throttle_ = declare_parameter<double>("sim_cruise_throttle", 0.1);
+    sim_cruise_throttle_ = declare_parameter<double>("sim_cruise_throttle", 0.15);
     // Below this the open-loop ESC/sim simply ignores the request, so anything
     // smaller has to be pulsed rather than sent directly. The simulator itself
     // has no such dead zone, so a sim launch should set this to 0.0 and get a
     // smooth corner throttle instead of a 2 Hz stutter.
-    sim_throttle_floor_ = declare_parameter<double>("sim_throttle_floor", 0.1);
+    sim_throttle_floor_ = declare_parameter<double>("sim_throttle_floor", 0.0);
     sim_brake_throttle_ = declare_parameter<double>("sim_brake_throttle", -0.05);
+    sim_corner_fraction_ = declare_parameter<double>("sim_corner_fraction", 1.0);
     // AutoDRIVE's steering_command is NORMALIZED [-1, 1], not radians, and
     // positive is LEFT - same sense as the LaserScan the heading came from (the
     // bridge turns a positive command into a positive front-wheel yaw). So the
@@ -754,6 +768,22 @@ public:
     // Set this to -1.0 if the car in the sim mirrors every turn - that is the
     // one thing here that cannot be checked without watching it drive.
     sim_steer_sign_ = declare_parameter<double>("sim_steer_sign", 1.0);
+
+    // Sim-only cornering overrides so tuning here never changes the real car.
+    if (sim_mode_)
+    {
+      deep_band = static_cast<float>(declare_parameter<double>("sim_deep_band", 0.35));
+      // Adaptive corner speed: learn from each corner how fast the next one can go.
+      sim_adaptive_corners_ = declare_parameter<bool>("sim_adaptive_corners", true);
+      corner_step_up_ = declare_parameter<double>("sim_corner_step_up", 0.05);
+      corner_step_down_ = declare_parameter<double>("sim_corner_step_down", 0.15);
+      corner_safe_clearance_ = declare_parameter<double>("sim_corner_safe_clearance", 0.40);
+      corner_danger_clearance_ = declare_parameter<double>("sim_corner_danger_clearance", 0.0);
+      sim_no_brake_ = declare_parameter<bool>("sim_no_brake", true);
+      bubble_radius_m = static_cast<float>(declare_parameter<double>("sim_bubble_radius", 0.32));
+      corner_lock_fraction_ = declare_parameter<double>("sim_corner_lock_fraction", 0.35);
+      corner_distance = static_cast<float>(declare_parameter<double>("sim_corner_distance", 1.6));
+    }
 
     auto topic_callback = [this](sensor_msgs::msg::LaserScan::UniquePtr scan) -> void
     {
@@ -773,6 +803,7 @@ public:
       // the command rate, so a stalled lidar lets the VESC's own command
       // timeout stop the motor.
       outputSteeringCommand(steering.data);
+      updateCornerLearning(isCornering(drive_state, steering.data));
       outputThrottleCommand(throttleForState(drive_state, steering.data));
     };
 
@@ -790,6 +821,16 @@ public:
     if (sim_mode_)
     {
       steering_pub = this->create_publisher<std_msgs::msg::Float32>("/autodrive/roboracer_1/steering_command", 1);
+      // Hitting a wall is the clearest sign a corner was taken too fast.
+      collision_sub = this->create_subscription<std_msgs::msg::Int32>(
+        "/autodrive/roboracer_1/collision_count", 10,
+        [this](std_msgs::msg::Int32::UniquePtr msg)
+        {
+          if (have_collision_count_ && msg->data > last_collision_count_)
+            punishCorner("hit a wall");
+          last_collision_count_ = msg->data;
+          have_collision_count_ = true;
+        });
       throttle_pub = this->create_publisher<std_msgs::msg::Float32>("/autodrive/roboracer_1/throttle_command", 1);
     }
     else
@@ -916,6 +957,83 @@ private:
     return true;
   }
 
+  // Same corner test throttleForState uses, so learning and speed agree.
+  bool isCornering(DriveState state, float steering_angle) const
+  {
+    if (state == DriveState::Corner)
+      return true;
+    if (state != DriveState::Cruise || max_steer_angle_ <= 0.0)
+      return false;
+    return std::abs(static_cast<double>(steering_angle)) / max_steer_angle_ >=
+           corner_lock_fraction_;
+  }
+
+  // Adaptive corner speed (sim only). The corners on this track are regular, so
+  // each one is practice for the next: when a corner ends, check how close the
+  // car got to a wall. Lots of room means go faster next time, too close means
+  // back off. corner_ceiling_ remembers the speed that went wrong so it settles
+  // just under it instead of crashing at the same speed every lap.
+  void updateCornerLearning(bool cornering)
+  {
+    if (!sim_mode_ || !sim_adaptive_corners_)
+      return;
+
+    if (cornering)
+    {
+      if (!corner_active_)
+      {
+        corner_active_ = true;
+        corner_punished_ = false;
+        corner_frames_ = 0;
+        corner_min_clearance_ = 10.0f;
+      }
+      corner_frames_++;
+      exit_frames_ = 0;
+      corner_min_clearance_ = std::min(corner_min_clearance_, nearest_obstacle);
+      return;
+    }
+
+    if (!corner_active_)
+      return;
+
+    // Steering wobbles across the corner threshold mid-turn, so only call the
+    // corner over after several straight frames in a row.
+    if (++exit_frames_ < 8)
+      return;
+    corner_active_ = false;
+
+    // Too short to be a real corner, or already penalized for a hit.
+    if (corner_frames_ < 10 || corner_punished_)
+      return;
+
+    if (corner_min_clearance_ < corner_danger_clearance_)
+    {
+      punishCorner("got too close to the wall");
+    }
+    else if (corner_min_clearance_ > corner_safe_clearance_)
+    {
+      sim_corner_fraction_ = std::min(sim_corner_fraction_ + corner_step_up_, corner_ceiling_);
+      RCLCPP_INFO(get_logger(), "Corner clean (closest %.2f m) - corner speed now %.2f",
+        corner_min_clearance_, sim_corner_fraction_);
+    }
+    else
+    {
+      RCLCPP_INFO(get_logger(), "Corner OK (closest %.2f m) - holding corner speed %.2f",
+        corner_min_clearance_, sim_corner_fraction_);
+    }
+  }
+
+  void punishCorner(const char *why)
+  {
+    if (!sim_mode_ || !sim_adaptive_corners_)
+      return;
+    corner_punished_ = true;
+    corner_ceiling_ = std::max(0.3, sim_corner_fraction_ - 0.05);
+    sim_corner_fraction_ = std::max(0.3, sim_corner_fraction_ - corner_step_down_);
+    RCLCPP_WARN(get_logger(), "Corner %s - corner speed down to %.2f (cap %.2f)",
+      why, sim_corner_fraction_, corner_ceiling_);
+  }
+
   // Collapse a drive state into ONE normalized throttle, shared by both stacks:
   //
   //     +1.0  full cruise
@@ -942,11 +1060,15 @@ private:
       case DriveState::Cruise:
         return 1.0f;
       case DriveState::Corner:
+        if (sim_mode_)
+          return static_cast<float>(sim_corner_fraction_);
         // Corner speed as a fraction of cruise, so the round trip through the
         // VESC branch below lands exactly back on corner_erpm_.
         return cruise_erpm_ > 0.0
           ? static_cast<float>(corner_erpm_ / cruise_erpm_) : 0.0f;
       case DriveState::Brake:
+        if (sim_mode_ && sim_no_brake_)
+          return static_cast<float>(sim_corner_fraction_);
         return -1.0f;
       case DriveState::Coast:
       default:
@@ -1079,6 +1201,23 @@ private:
   double sim_cruise_throttle_ = 0.1;
   double sim_throttle_floor_ = 0.1;
   double sim_brake_throttle_ = -0.05;
+  // Adaptive corner learning (sim only).
+  bool sim_adaptive_corners_ = true;
+  double corner_step_up_ = 0.05;
+  double corner_step_down_ = 0.15;
+  double corner_safe_clearance_ = 0.40;
+  double corner_danger_clearance_ = 0.25;
+  double corner_ceiling_ = 1.0;
+  bool corner_active_ = false;
+  bool corner_punished_ = false;
+  int corner_frames_ = 0;
+  int exit_frames_ = 0;
+  float corner_min_clearance_ = 10.0f;
+  int last_collision_count_ = 0;
+  bool have_collision_count_ = false;
+  rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr collision_sub;
+  bool sim_no_brake_ = true;
+  double sim_corner_fraction_ = 0.3;
   double sim_steer_sign_ = 1.0;
   // Stopped by default: nothing moves until the estop console releases it.
   // Only consulted in output_mode:=vesc - the sim has no e-stop console.
